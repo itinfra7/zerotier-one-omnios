@@ -1,0 +1,114 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+PATH=/usr/bin:/usr/sbin:/opt/ooce/bin
+ZT_BIN="/opt/zerotier-one/bin/zerotier-one"
+ZT_HOME="/var/lib/zerotier-one"
+ZT_MATCH="${ZT_BIN}.*${ZT_HOME}"
+
+cleanup_owned_links() {
+    typeset link
+
+    while IFS=: read -r link; do
+        case "$link" in
+            zt[0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v])
+                ifconfig "$link" inet6 unplumb >/dev/null 2>&1 || true
+                ifconfig "$link" unplumb >/dev/null 2>&1 || true
+                dladm delete-vnic "$link" >/dev/null 2>&1 || true
+                ;;
+            zb[0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v])
+                dladm delete-vnic "$link" >/dev/null 2>&1 || true
+                ;;
+        esac
+    done < <(dladm show-vnic -p -o LINK 2>/dev/null || true)
+
+    while IFS=: read -r link; do
+        case "$link" in
+            zs[0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v][0-9a-v])
+                dladm delete-etherstub "$link" >/dev/null 2>&1 || true
+                ;;
+        esac
+    done < <(dladm show-etherstub -p -o LINK 2>/dev/null || true)
+}
+
+rejoin_saved_networks() {
+    typeset network_file
+    typeset nwid
+
+    if [ ! -d "${ZT_HOME}/networks.d" ]; then
+        return 0
+    fi
+
+    for network_file in "${ZT_HOME}"/networks.d/*.conf; do
+        if [ ! -f "${network_file}" ]; then
+            continue
+        fi
+
+        nwid="${network_file##*/}"
+        nwid="${nwid%.conf}"
+        if [ -n "${nwid}" ]; then
+            zerotier-cli join "${nwid}" >/dev/null 2>&1 || true
+        fi
+    done
+}
+
+start_service() {
+    typeset attempt=0
+
+    if pgrep -f "${ZT_MATCH}" >/dev/null 2>&1; then
+        exit 0
+    fi
+
+    cleanup_owned_links
+    "${ZT_BIN}" -d "${ZT_HOME}"
+
+    while [ "${attempt}" -lt 20 ]; do
+        if zerotier-cli info >/dev/null 2>&1; then
+            rejoin_saved_networks
+            exit 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
+    exit 1
+}
+
+stop_service() {
+    typeset attempt=0
+
+    if ! pgrep -f "${ZT_MATCH}" >/dev/null 2>&1; then
+        cleanup_owned_links
+        exit 0
+    fi
+
+    pkill -TERM -f "${ZT_MATCH}" || true
+    while [ "${attempt}" -lt 20 ]; do
+        if ! pgrep -f "${ZT_MATCH}" >/dev/null 2>&1; then
+            cleanup_owned_links
+            exit 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
+    pkill -KILL -f "${ZT_MATCH}" || true
+    cleanup_owned_links
+}
+
+case "${1:-}" in
+    start)
+        start_service
+        ;;
+    stop)
+        stop_service
+        ;;
+    restart)
+        stop_service
+        start_service
+        ;;
+    *)
+        printf 'Usage: %s [start|stop|restart]\n' "$0" >&2
+        exit 2
+        ;;
+esac

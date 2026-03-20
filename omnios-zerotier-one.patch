@@ -1,0 +1,865 @@
+diff --git a/make-bsd.mk b/make-bsd.mk
+index cf4c22c8b..67a811ea2 100644
+--- a/make-bsd.mk
++++ b/make-bsd.mk
+@@ -1,5 +1,7 @@
+ # This requires GNU make, which is typically "gmake" on BSD systems
+ 
++HOST_UNAME_S=$(shell uname -s)
++
+ INCLUDES=-isystem ext -Iext/prometheus-cpp-lite-1.0/core/include -Iext/prometheus-cpp-lite-1.0/simpleapi/include -Iext/opentelemetry-cpp-api-only/include
+ DEFS=
+ LIBS=
+@@ -39,6 +41,11 @@ ifeq ($(OSTYPE),FreeBSD)
+ 	endif
+ endif
+ 
++ifeq ($(HOST_UNAME_S),SunOS)
++	override DEFS+=-D__UNIX_LIKE__
++	LIBS+=-lsocket -lnsl -ldlpi
++endif
++
+ # Build with address sanitization library for advanced debugging (clang)
+ ifeq ($(ZT_SANITIZE),1)
+ 	SANFLAGS+=-fsanitize=address -DASAN_OPTIONS=symbolize=1
+@@ -54,9 +61,14 @@ ifeq ($(ZT_DEBUG),1)
+ node/Salsa20.o node/SHA512.o node/C25519.o node/Poly1305.o: CFLAGS = -Wall -O2 -g -pthread $(INCLUDES) $(DEFS)
+ else
+ 	CFLAGS?=-O3 -fstack-protector
+-	CFLAGS+=-Wall -fPIE -fvisibility=hidden -fstack-protector -pthread $(INCLUDES) -DNDEBUG $(DEFS)
+-	LDFLAGS+=-pie -Wl,-z,relro,-z,now
+-	STRIP=strip --strip-all
++	CFLAGS+=-Wall -fvisibility=hidden -fstack-protector -pthread $(INCLUDES) -DNDEBUG $(DEFS)
++	ifneq ($(HOST_UNAME_S),SunOS)
++		CFLAGS+=-fPIE
++		LDFLAGS+=-pie -Wl,-z,relro,-z,now
++		STRIP=strip --strip-all
++	else
++		STRIP=strip
++	endif
+ endif
+ 
+ ifeq ($(ZT_TRACE),1)
+diff --git a/node/Constants.hpp b/node/Constants.hpp
+index 6baf8c7fe..a76d2345c 100644
+--- a/node/Constants.hpp
++++ b/node/Constants.hpp
+@@ -86,6 +86,12 @@
+ #endif
+ #endif
+ 
++#if defined(__sun) || defined(__sun__)
++#ifndef __UNIX_LIKE__
++#define __UNIX_LIKE__
++#endif
++#endif
++
+ #if defined(_WIN32) || defined(_WIN64)
+ #ifdef ZT_SSO_SUPPORTED
+ #define ZT_SSO_ENABLED 1
+@@ -287,7 +293,11 @@
+ /**
+  * Default MTU used for Ethernet tap device
+  */
++#if defined(__sun) || defined(__sun__)
++#define ZT_DEFAULT_MTU 1280
++#else
+ #define ZT_DEFAULT_MTU 2800
++#endif
+ 
+ /**
+  * Maximum number of packet fragments we'll support (protocol max: 16)
+diff --git a/one.cpp b/one.cpp
+index a066f4e65..8cffbbf53 100644
+--- a/one.cpp
++++ b/one.cpp
+@@ -549,9 +549,9 @@ static int cli(int argc, char** argv)
+ 							nlohmann::json& p = j[k];
+ 							bool isBonded = p["isBonded"];
+ 							if (isBonded) {
+-								int8_t bondingPolicyCode = p["bondingPolicyCode"];
+-								int8_t numAliveLinks = p["numAliveLinks"];
+-								int8_t numTotalLinks = p["numTotalLinks"];
++								int bondingPolicyCode = OSUtils::jsonInt(p["bondingPolicyCode"], 0);
++								int numAliveLinks = OSUtils::jsonInt(p["numAliveLinks"], 0);
++								int numTotalLinks = OSUtils::jsonInt(p["numTotalLinks"], 0);
+ 								bFoundBond = true;
+ 								std::string policyStr = "none";
+ 								if (bondingPolicyCode >= ZT_BOND_POLICY_NONE && bondingPolicyCode <= ZT_BOND_POLICY_BALANCE_AWARE) {
+@@ -734,9 +734,9 @@ static int cli(int argc, char** argv)
+ 						nlohmann::json& p = j[k];
+ 						bool isBonded = p["isBonded"];
+ 						if (isBonded) {
+-							int8_t bondingPolicyCode = p["bondingPolicyCode"];
+-							int8_t numAliveLinks = p["numAliveLinks"];
+-							int8_t numTotalLinks = p["numTotalLinks"];
++							int bondingPolicyCode = OSUtils::jsonInt(p["bondingPolicyCode"], 0);
++							int numAliveLinks = OSUtils::jsonInt(p["numAliveLinks"], 0);
++							int numTotalLinks = OSUtils::jsonInt(p["numTotalLinks"], 0);
+ 							bFoundBond = true;
+ 							std::string policyStr = "none";
+ 							if (bondingPolicyCode >= ZT_BOND_POLICY_NONE && bondingPolicyCode <= ZT_BOND_POLICY_BALANCE_AWARE) {
+diff --git a/osdep/BSDEthernetTap.cpp b/osdep/BSDEthernetTap.cpp
+index 82ac07d1a..727d4d9aa 100644
+--- a/osdep/BSDEthernetTap.cpp
++++ b/osdep/BSDEthernetTap.cpp
+@@ -22,10 +22,14 @@
+ #include <net/if.h>
+ #include <net/if_arp.h>
+ #include <net/if_dl.h>
++#if !defined(__sun)
+ #include <net/if_media.h>
++#endif
+ #include <net/route.h>
+ #include <netinet/in.h>
++#if !defined(__sun)
+ #include <pthread_np.h>
++#endif
+ #include <sched.h>
+ #include <set>
+ #include <signal.h>
+@@ -34,7 +38,9 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <string>
++#if !defined(__sun)
+ #include <sys/cdefs.h>
++#endif
+ #include <sys/ioctl.h>
+ #include <sys/param.h>
+ #include <sys/select.h>
+@@ -45,15 +51,184 @@
+ #include <sys/wait.h>
+ #include <unistd.h>
+ #include <utility>
++#if defined(__sun)
++#include <stropts.h>
++#include <sys/dlpi.h>
++#include <sys/sockio.h>
++#endif
+ 
+ #define ZT_BASE32_CHARS "0123456789abcdefghijklmnopqrstuv"
+ #define ZT_TAP_BUF_SIZE (1024 * 16)
+-
+ // ff:ff:ff:ff:ff:ff with no ADI
+ static const ZeroTier::MulticastGroup _blindWildcardMulticastGroup(ZeroTier::MAC(0xff), 0);
+ 
+ namespace ZeroTier {
+ 
++#ifdef __sun
++static bool _sunIfMatches(const char* expected, const char* actual)
++{
++	if ((! expected) || (! actual))
++		return false;
++	const size_t expectedLen = strlen(expected);
++	return (strncmp(expected, actual, expectedLen) == 0) && ((actual[expectedLen] == 0) || (actual[expectedLen] == ':'));
++}
++
++static int _sunRun(const std::initializer_list<const char*>& argv)
++{
++	std::vector<char*> args;
++	args.reserve(argv.size() + 1);
++	if (argv.size() == 0)
++		return -1;
++
++	auto it = argv.begin();
++	const char* execPath = *it++;
++	args.push_back(const_cast<char*>(execPath));
++	for (; it != argv.end(); ++it) {
++		if ((args.size() == 1) && (! strcmp(*it, execPath)))
++			continue;
++		args.push_back(const_cast<char*>(*it));
++	}
++	args.push_back((char*)0);
++
++	long cpid = (long)::vfork();
++	if (cpid == 0) {
++		int nullFd = ::open("/dev/null", O_RDWR);
++		if (nullFd >= 0) {
++			::dup2(nullFd, STDOUT_FILENO);
++			::dup2(nullFd, STDERR_FILENO);
++			if (nullFd > STDERR_FILENO)
++				::close(nullFd);
++		}
++		::execv(args[0], args.data());
++		::_exit(127);
++	}
++	if (cpid < 0)
++		return -1;
++
++	int exitcode = -1;
++	::waitpid(cpid, &exitcode, 0);
++	return exitcode;
++}
++
++static std::string _sunMacString(const MAC& mac)
++{
++	char buf[18];
++	OSUtils::ztsnprintf(buf, sizeof(buf), "%.2x:%.2x:%.2x:%.2x:%.2x:%.2x", (int)mac[0], (int)mac[1], (int)mac[2], (int)mac[3], (int)mac[4], (int)mac[5]);
++	return std::string(buf);
++}
++
++static MAC _sunBackendMac(const MAC& mac)
++{
++	MAC backend(mac);
++	uint8_t b[6];
++	uint8_t original[6];
++	backend.copyTo(b, 6);
++	mac.copyTo(original, 6);
++	b[0] |= 0x02;
++	b[0] &= 0xfe;
++	b[5] ^= 0x01;
++	if (! memcmp(b, original, 6))
++		b[4] ^= 0x80;
++	return MAC(b, 6);
++}
++
++static std::string _sunMakeName(const char* prefix, uint64_t nwid)
++{
++	std::string name(prefix);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 60) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 55) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 50) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 45) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 40) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 35) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 30) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 25) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 20) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 15) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 10) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)((nwid >> 5) & 0x1f)]);
++	name.push_back(ZT_BASE32_CHARS[(unsigned long)(nwid & 0x1f)]);
++	return name;
++}
++
++static unsigned int _sunClampMtu(unsigned int mtu)
++{
++	/*
++	 * The illumos DLPI/VNIC path used here is stable with conservative MTUs,
++	 * but larger values can stall encrypted TCP sessions over routed links.
++	 */
++	if (mtu < 1280U)
++		return 1280U;
++	if (mtu > 1280U)
++		return 1280U;
++	return mtu;
++}
++
++static bool _sunOpenRawHandle(const std::string& dev, bool promiscuous, dlpi_handle_t& dh, int& fd)
++{
++	dh = (dlpi_handle_t)0;
++	fd = -1;
++	int rc = ::dlpi_open(dev.c_str(), &dh, DLPI_RAW);
++	if (rc != DLPI_SUCCESS)
++		return false;
++	rc = ::dlpi_bind(dh, DLPI_ANY_SAP, (uint_t*)0);
++	if (rc != DLPI_SUCCESS)
++		return false;
++	if (promiscuous) {
++		rc = ::dlpi_promiscon(dh, DL_PROMISC_PHYS);
++		if (rc != DLPI_SUCCESS)
++			return false;
++		rc = ::dlpi_promiscon(dh, DL_PROMISC_SAP);
++		if (rc != DLPI_SUCCESS)
++			return false;
++		rc = ::dlpi_promiscon(dh, DL_PROMISC_MULTI);
++		if (rc != DLPI_SUCCESS)
++			return false;
++	}
++	fd = ::dlpi_fd(dh);
++	return (fd >= 0);
++}
++
++static bool _sunCreateDlpiStack(const std::string& stubDev, const std::string& visDev, const std::string& backDev, const MAC& visMac, const MAC& backMac, unsigned int mtu, dlpi_handle_t& rxDh, dlpi_handle_t& txDh, int& rxFd)
++{
++	const unsigned int effectiveMtu = _sunClampMtu(mtu);
++	std::string mtuStr(std::to_string(effectiveMtu));
++	std::string mtuProp(std::string("mtu=") + mtuStr);
++	std::string visMacStr(_sunMacString(visMac));
++	std::string backMacStr(_sunMacString(backMac));
++	rxDh = (dlpi_handle_t)0;
++	txDh = (dlpi_handle_t)0;
++	rxFd = -1;
++	int txFd = -1;
++
++	(void)_sunRun({"/usr/sbin/ifconfig", "/usr/sbin/ifconfig", visDev.c_str(), "unplumb"});
++	(void)_sunRun({"/usr/sbin/ifconfig", "/usr/sbin/ifconfig", visDev.c_str(), "inet6", "unplumb"});
++	(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "delete-vnic", backDev.c_str()});
++	(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "delete-vnic", visDev.c_str()});
++	(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "delete-etherstub", stubDev.c_str()});
++
++	if (_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "create-etherstub", stubDev.c_str()}) != 0)
++		return false;
++	if (_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "create-vnic", "-t", "-m", visMacStr.c_str(), "-l", stubDev.c_str(), visDev.c_str()}) != 0)
++		return false;
++	if (_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "create-vnic", "-t", "-m", backMacStr.c_str(), "-l", stubDev.c_str(), backDev.c_str()}) != 0)
++		return false;
++	if (_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "set-linkprop", "-p", mtuProp.c_str(), visDev.c_str()}) != 0)
++		return false;
++	if (_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "set-linkprop", "-p", mtuProp.c_str(), backDev.c_str()}) != 0)
++		return false;
++	if (_sunRun({"/usr/sbin/ifconfig", "/usr/sbin/ifconfig", visDev.c_str(), "plumb", "mtu", mtuStr.c_str(), "up"}) != 0)
++		return false;
++
++	if (! _sunOpenRawHandle(visDev, true, rxDh, rxFd))
++		return false;
++	if (! _sunOpenRawHandle(backDev, false, txDh, txFd))
++		return false;
++	rxFd = ::dlpi_fd(rxDh);
++	return (rxFd >= 0);
++}
++#endif
++
+ BSDEthernetTap::BSDEthernetTap(
+ 	const char* homePath,
+ 	unsigned int concurrency,
+@@ -70,9 +245,26 @@ BSDEthernetTap::BSDEthernetTap(
+ 	, _pinning(pinning)
+ 	, _arg(arg)
+ 	, _nwid(nwid)
+-	, _mtu(mtu)
++	, _mtu(
++#ifdef __sun
++		  _sunClampMtu(mtu)
++#else
++		  mtu
++#endif
++	  )
+ 	, _metric(metric)
+-	, _fd(0)
++	, _fd(-1)
++	, _ipFd(-1)
++	, _ipMuxId(-1)
++	, _ppa(-1)
++#ifdef __sun
++	, _sunDlpi((dlpi_handle_t)0)
++	, _sunTxDlpi((dlpi_handle_t)0)
++	, _sunBackendDev()
++	, _sunStubDev()
++	, _sunVisibleMac(mac)
++#endif
++	, _destroyPersistent(false)
+ 	, _enabled(true)
+ 	, _lastIfAddrsUpdate(0)
+ {
+@@ -81,7 +273,15 @@ BSDEthernetTap::BSDEthernetTap(
+ 
+ 	Mutex::Lock _gl(globalTapCreateLock);
+ 
+-#ifdef __FreeBSD__
++#ifdef __sun
++	(void)tmpdevname;
++	(void)devpath;
++	_dev = _sunMakeName("zt", nwid);
++	_sunBackendDev = _sunMakeName("zb", nwid);
++	_sunStubDev = _sunMakeName("zs", nwid);
++	if (! _sunCreateDlpiStack(_sunStubDev, _dev, _sunBackendDev, mac, _sunBackendMac(mac), _mtu, _sunDlpi, _sunTxDlpi, _fd))
++		_fd = -1;
++#elif defined(__FreeBSD__)
+ 	/* FreeBSD allows long interface names and interface renaming */
+ 
+ 	_dev = "zt";
+@@ -163,7 +363,7 @@ BSDEthernetTap::BSDEthernetTap(
+ 	}
+ #endif
+ 
+-	if (_fd <= 0)
++	if (_fd < 0)
+ 		throw std::runtime_error("unable to open TAP device or no more devices available");
+ 
+ 	if (fcntl(_fd, F_SETFL, fcntl(_fd, F_GETFL) & ~O_NONBLOCK) == -1) {
+@@ -175,6 +375,7 @@ BSDEthernetTap::BSDEthernetTap(
+ 	OSUtils::ztsnprintf(ethaddr, sizeof(ethaddr), "%.2x:%.2x:%.2x:%.2x:%.2x:%.2x", (int)mac[0], (int)mac[1], (int)mac[2], (int)mac[3], (int)mac[4], (int)mac[5]);
+ 	OSUtils::ztsnprintf(mtustr, sizeof(mtustr), "%u", _mtu);
+ 	OSUtils::ztsnprintf(metstr, sizeof(metstr), "%u", _metric);
++#ifndef __sun
+ 	long cpid = (long)vfork();
+ 	if (cpid == 0) {
+ #ifdef ZT_TRACE
+@@ -191,6 +392,7 @@ BSDEthernetTap::BSDEthernetTap(
+ 			throw std::runtime_error("ifconfig failure setting link-layer address and activating tap interface");
+ 		}
+ 	}
++#endif
+ 
+ 	// Set close-on-exec so that devices cannot persist if we fork/exec for update
+ 	fcntl(_fd, F_SETFD, fcntl(_fd, F_GETFD) | FD_CLOEXEC);
+@@ -203,9 +405,13 @@ BSDEthernetTap::BSDEthernetTap(
+ BSDEthernetTap::~BSDEthernetTap()
+ {
+ 	::write(_shutdownSignalPipe[1], "\0", 1);	// causes thread to exit
+-	::close(_fd);
++#ifndef __sun
++	if (_fd >= 0)
++		::close(_fd);
++#endif
+ 	::close(_shutdownSignalPipe[0]);
+ 	::close(_shutdownSignalPipe[1]);
++#ifndef __sun
+ 	long cpid = (long)vfork();
+ 	if (cpid == 0) {
+ #ifdef ZT_TRACE
+@@ -218,7 +424,24 @@ BSDEthernetTap::~BSDEthernetTap()
+ 		int exitcode = -1;
+ 		::waitpid(cpid, &exitcode, 0);
+ 	}
++#endif
+ 	Thread::join(_thread);
++#ifdef __sun
++	if (_sunDlpi) {
++		::dlpi_close(_sunDlpi);
++		_sunDlpi = (dlpi_handle_t)0;
++	}
++	if (_sunTxDlpi) {
++		::dlpi_close(_sunTxDlpi);
++		_sunTxDlpi = (dlpi_handle_t)0;
++	}
++	_fd = -1;
++	(void)_sunRun({"/usr/sbin/ifconfig", "/usr/sbin/ifconfig", _dev.c_str(), "unplumb"});
++	(void)_sunRun({"/usr/sbin/ifconfig", "/usr/sbin/ifconfig", _dev.c_str(), "inet6", "unplumb"});
++	(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "delete-vnic", _sunBackendDev.c_str()});
++	(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "delete-vnic", _dev.c_str()});
++	(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "delete-etherstub", _sunStubDev.c_str()});
++#endif
+ 	for (std::thread& t : _rxThreads) {
+ 		t.join();
+ 	}
+@@ -239,10 +462,21 @@ static bool ___removeIp(const std::string& _dev, const InetAddress& ip)
+ 	long cpid = (long)vfork();
+ 	if (cpid == 0) {
+ 		char ipbuf[64];
++#ifdef __sun
++		execl(
++			"/sbin/ifconfig",
++			"/sbin/ifconfig",
++			_dev.c_str(),
++			ip.isV4() ? "removeif" : "inet6",
++			ip.isV4() ? ip.toIpString(ipbuf) : "removeif",
++			ip.isV4() ? (const char*)0 : ip.toIpString(ipbuf),
++			(const char*)0);
++#else
+ #ifdef ZT_TRACE
+ 		fprintf(stderr, "DEBUG: ifconfig %s inet %s -alias" ZT_EOL_S, _dev.c_str(), ip.toIpString(ipbuf));
+ #endif
+ 		execl("/sbin/ifconfig", "/sbin/ifconfig", _dev.c_str(), "inet", ip.toIpString(ipbuf), "-alias", (const char*)0);
++#endif
+ 		_exit(-1);
+ 	}
+ 	else if (cpid > 0) {
+@@ -273,10 +507,39 @@ bool BSDEthernetTap::addIp(const InetAddress& ip)
+ 	long cpid = (long)vfork();
+ 	if (cpid == 0) {
+ 		char tmp[128];
++#ifdef __sun
++		if (ip.isV4()) {
++			long plumbPid = (long)vfork();
++			if (plumbPid == 0) {
++				::execl("/sbin/ifconfig", "/sbin/ifconfig", _dev.c_str(), "plumb", "up", (const char*)0);
++				::_exit(-1);
++			}
++			else if (plumbPid > 0) {
++				int plumbExitCode = -1;
++				::waitpid(plumbPid, &plumbExitCode, 0);
++				(void)plumbExitCode;
++			}
++			::execl("/sbin/ifconfig", "/sbin/ifconfig", _dev.c_str(), "addif", ip.toString(tmp), "up", (const char*)0);
++		}
++		else {
++			long plumbPid = (long)vfork();
++			if (plumbPid == 0) {
++				::execl("/sbin/ifconfig", "/sbin/ifconfig", _dev.c_str(), "inet6", "plumb", "up", (const char*)0);
++				::_exit(-1);
++			}
++			else if (plumbPid > 0) {
++				int plumbExitCode = -1;
++				::waitpid(plumbPid, &plumbExitCode, 0);
++				(void)plumbExitCode;
++			}
++			::execl("/sbin/ifconfig", "/sbin/ifconfig", _dev.c_str(), "inet6", "addif", ip.toString(tmp), "up", (const char*)0);
++		}
++#else
+ #ifdef ZT_TRACE
+ 		fprintf(stderr, "DEBUG: ifconfig %s %s %s alias" ZT_EOL_S, _dev.c_str(), ip.isV4() ? "inet" : "inet6", ip.toString(tmp));
+ #endif
+ 		::execl("/sbin/ifconfig", "/sbin/ifconfig", _dev.c_str(), ip.isV4() ? "inet" : "inet6", ip.toString(tmp), "alias", (const char*)0);
++#endif
+ 		::_exit(-1);
+ 	}
+ 	else if (cpid > 0) {
+@@ -316,7 +579,13 @@ std::vector<InetAddress> BSDEthernetTap::ips() const
+ 
+ 	struct ifaddrs* p = ifa;
+ 	while (p) {
+-		if ((! strcmp(p->ifa_name, _dev.c_str())) && (p->ifa_addr) && (p->ifa_netmask) && (p->ifa_addr->sa_family == p->ifa_netmask->sa_family)) {
++		if (
++#ifdef __sun
++			_sunIfMatches(_dev.c_str(), p->ifa_name) &&
++#else
++			(! strcmp(p->ifa_name, _dev.c_str())) &&
++#endif
++			(p->ifa_addr) && (p->ifa_netmask) && (p->ifa_addr->sa_family == p->ifa_netmask->sa_family)) {
+ 			switch (p->ifa_addr->sa_family) {
+ 				case AF_INET: {
+ 					struct sockaddr_in* sin = (struct sockaddr_in*)p->ifa_addr;
+@@ -355,7 +624,13 @@ void BSDEthernetTap::put(const MAC& from, const MAC& to, unsigned int etherType,
+ 		*((uint16_t*)(putBuf + 12)) = htons((uint16_t)etherType);
+ 		memcpy(putBuf + 14, data, len);
+ 		len += 14;
++#ifdef __sun
++		if (_sunTxDlpi) {
++			(void)::dlpi_send(_sunTxDlpi, (const void*)0, 0, putBuf, len, (const dlpi_sendinfo_t*)0);
++		}
++#else
+ 		::write(_fd, putBuf, len);
++#endif
+ 	}
+ }
+ 
+@@ -372,7 +647,7 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
+ {
+ 	std::vector<MulticastGroup> newGroups;
+ 
+-#ifndef __OpenBSD__
++#if !defined(__OpenBSD__) && !defined(__sun)
+ 	struct ifmaddrs* ifmap = (struct ifmaddrs*)0;
+ 	if (! getifmaddrs(&ifmap)) {
+ 		struct ifmaddrs* p = ifmap;
+@@ -387,7 +662,7 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
+ 		}
+ 		freeifmaddrs(ifmap);
+ 	}
+-#endif	 // __OpenBSD__
++#endif	 // !__OpenBSD__ && !__sun
+ 
+ 	std::vector<InetAddress> allIps(ips());
+ 	for (std::vector<InetAddress>::iterator ip(allIps.begin()); ip != allIps.end(); ++ip)
+@@ -410,6 +685,9 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
+ 
+ void BSDEthernetTap::setMtu(unsigned int mtu)
+ {
++#ifdef __sun
++	mtu = _sunClampMtu(mtu);
++#endif
+ 	if (mtu != _mtu) {
+ 		_mtu = mtu;
+ 		long cpid = (long)vfork();
+@@ -418,6 +696,11 @@ void BSDEthernetTap::setMtu(unsigned int mtu)
+ 			OSUtils::ztsnprintf(tmp, sizeof(tmp), "%u", mtu);
+ #ifdef ZT_TRACE
+ 			fprintf(stderr, "DEBUG: ifconfig %s mtu %s" ZT_EOL_S, _dev.c_str(), tmp);
++#endif
++#ifdef __sun
++			std::string mtuProp(std::string("mtu=") + tmp);
++			(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "set-linkprop", "-p", mtuProp.c_str(), _dev.c_str()});
++			(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "set-linkprop", "-p", mtuProp.c_str(), _sunBackendDev.c_str()});
+ #endif
+ 			execl("/sbin/ifconfig", "/sbin/ifconfig", _dev.c_str(), "mtu", tmp, (const char*)0);
+ 			_exit(-1);
+@@ -435,11 +718,11 @@ void BSDEthernetTap::threadMain() throw()
+ 	// constructing itself.
+ 	Thread::sleep(500);
+ 
+-#ifndef __OpenBSD__
+ 	bool pinning = _pinning;
+ 
+ 	for (unsigned int i = 0; i < _concurrency; ++i) {
+ 		_rxThreads.push_back(std::thread([this, i, pinning] {
++#if !defined(__OpenBSD__) && !defined(__sun)
+ 			if (pinning) {
+ 				int pinCore = i % _concurrency;
+ 				fprintf(stderr, "Pinning thread %d to core %d\n", i, pinCore);
+@@ -454,7 +737,9 @@ void BSDEthernetTap::threadMain() throw()
+ 					exit(1);
+ 				}
+ 			}
+-#endif	 // __OpenBSD__
++#else
++			(void)pinning;
++#endif
+ 
+ 			uint8_t b[ZT_TAP_BUF_SIZE];
+ 			MAC to, from;
+@@ -476,6 +761,19 @@ void BSDEthernetTap::threadMain() throw()
+ 					break;
+ 
+ 				if (FD_ISSET(_fd, &readfds)) {
++#ifdef __sun
++					size_t msglen = sizeof(b);
++					int dlpiRc = _sunDlpi ? ::dlpi_recv(_sunDlpi, (void*)0, (size_t*)0, b, &msglen, 0, (dlpi_recvinfo_t*)0) : DLPI_FAILURE;
++					if (dlpiRc == DLPI_SUCCESS) {
++						n = (int)msglen;
++					}
++					else if (dlpiRc == DLPI_ETIMEDOUT) {
++						continue;
++					}
++					else {
++						break;
++					}
++#else
+ 					n = (int)::read(_fd, b + r, sizeof(b) - r);
+ 					if (n < 0) {
+ 						if ((errno != EINTR) && (errno != ETIMEDOUT))
+@@ -500,12 +798,27 @@ void BSDEthernetTap::threadMain() throw()
+ 							r = 0;
+ 						}
+ 					}
++#endif
++#ifdef __sun
++					if (n > 14) {
++						uint8_t visibleMac[6];
++						_sunVisibleMac.copyTo(visibleMac, 6);
++						if (memcmp(b + 6, visibleMac, 6) != 0)
++							continue;
++						if (n > ((int)_mtu + 14))
++							n = _mtu + 14;
++						if (_enabled) {
++							to.setTo(b, 6);
++							from.setTo(b + 6, 6);
++							unsigned int etherType = ntohs(((const uint16_t*)b)[6]);
++							_handler(_arg, (void*)0, _nwid, from, to, etherType, 0, (const void*)(b + 14), n - 14);
++						}
++					}
++#endif
+ 				}
+ 			}
+-#ifndef __OpenBSD__
+ 		}));
+ 	}
+-#endif	 // __OpenBSD__
+ }
+ 
+ }	// namespace ZeroTier
+diff --git a/osdep/BSDEthernetTap.hpp b/osdep/BSDEthernetTap.hpp
+index 190f3a0b4..d5ed8ee68 100644
+--- a/osdep/BSDEthernetTap.hpp
++++ b/osdep/BSDEthernetTap.hpp
+@@ -21,6 +21,9 @@
+ #include <string>
+ #include <thread>
+ #include <vector>
++#ifdef __sun
++#include <libdlpi.h>
++#endif
+ 
+ namespace ZeroTier {
+ 
+@@ -68,7 +71,18 @@ class BSDEthernetTap : public EthernetTap {
+ 	unsigned int _mtu;
+ 	unsigned int _metric;
+ 	int _fd;
++	int _ipFd;
++	int _ipMuxId;
++	int _ppa;
++#ifdef __sun
++	dlpi_handle_t _sunDlpi;
++	dlpi_handle_t _sunTxDlpi;
++	std::string _sunBackendDev;
++	std::string _sunStubDev;
++	MAC _sunVisibleMac;
++#endif
+ 	int _shutdownSignalPipe[2];
++	bool _destroyPersistent;
+ 	volatile bool _enabled;
+ 	mutable std::vector<InetAddress> _ifaddrs;
+ 	mutable uint64_t _lastIfAddrsUpdate;
+diff --git a/osdep/EthernetTap.cpp b/osdep/EthernetTap.cpp
+index 1d35e01dc..cf5224963 100644
+--- a/osdep/EthernetTap.cpp
++++ b/osdep/EthernetTap.cpp
+@@ -41,6 +41,10 @@
+ #include "BSDEthernetTap.hpp"
+ #endif	 // __FreeBSD__
+ 
++#ifdef __sun
++#include "BSDEthernetTap.hpp"
++#endif	 // __sun
++
+ #ifdef __NetBSD__
+ #include "NetBSDEthernetTap.hpp"
+ #endif	 // __NetBSD__
+@@ -127,6 +131,10 @@ std::shared_ptr<EthernetTap> EthernetTap::newInstance(
+ 	return std::shared_ptr<EthernetTap>(new BSDEthernetTap(homePath, concurrency, pinning, mac, mtu, metric, nwid, friendlyName, handler, arg));
+ #endif	 // __FreeBSD__
+ 
++#ifdef __sun
++	return std::shared_ptr<EthernetTap>(new BSDEthernetTap(homePath, concurrency, pinning, mac, mtu, metric, nwid, friendlyName, handler, arg));
++#endif	 // __sun
++
+ #ifdef __NetBSD__
+ 	return std::shared_ptr<EthernetTap>(new NetBSDEthernetTap(homePath, mac, mtu, metric, nwid, friendlyName, handler, arg));
+ #endif	 // __NetBSD__
+diff --git a/osdep/ManagedRoute.cpp b/osdep/ManagedRoute.cpp
+index 6a605b856..5386ffef4 100644
+--- a/osdep/ManagedRoute.cpp
++++ b/osdep/ManagedRoute.cpp
+@@ -96,6 +96,50 @@ struct _RTE {
+ 	bool isDefault;
+ };
+ 
++#ifdef __sun   // -------------------------------------------------------------
++#define ZT_ROUTING_SUPPORT_FOUND 1
++
++static bool _isHostRoute(const InetAddress& target)
++{
++	return ((target.ss_family == AF_INET) && (target.netmaskBits() >= 32)) || ((target.ss_family == AF_INET6) && (target.netmaskBits() >= 128));
++}
++
++static void _routeCmdSun(const char* op, const InetAddress& target, const InetAddress& via, const InetAddress& src, const char* localInterface)
++{
++	long p = (long)fork();
++	if (p > 0) {
++		int exitcode = -1;
++		::waitpid(p, &exitcode, 0);
++	}
++	else if (p == 0) {
++		::close(STDOUT_FILENO);
++		::close(STDERR_FILENO);
++		char targetbuf[64];
++		char gwbuf[64];
++		const bool hostRoute = _isHostRoute(target);
++
++		if (via) {
++			if (hostRoute) {
++				::execl(ZT_BSD_ROUTE_CMD, ZT_BSD_ROUTE_CMD, "-n", op, "-host", target.toIpString(targetbuf), via.toIpString(gwbuf), (const char*)0);
++			}
++			else {
++				::execl(ZT_BSD_ROUTE_CMD, ZT_BSD_ROUTE_CMD, "-n", op, "-net", target.toString(targetbuf), via.toIpString(gwbuf), (const char*)0);
++			}
++		}
++		else if ((localInterface) && (localInterface[0]) && src) {
++			if (hostRoute) {
++				::execl(ZT_BSD_ROUTE_CMD, ZT_BSD_ROUTE_CMD, "-n", op, "-host", target.toIpString(targetbuf), src.toIpString(gwbuf), "-interface", "-ifp", localInterface, (const char*)0);
++			}
++			else {
++				::execl(ZT_BSD_ROUTE_CMD, ZT_BSD_ROUTE_CMD, "-n", op, "-net", target.toString(targetbuf), src.toIpString(gwbuf), "-interface", "-ifp", localInterface, (const char*)0);
++			}
++		}
++		::_exit(-1);
++	}
++}
++
++#endif	 // __sun -------------------------------------------------------------
++
+ #ifdef __BSD__	 // ------------------------------------------------------------
+ #define ZT_ROUTING_SUPPORT_FOUND 1
+ 
+@@ -564,6 +608,19 @@ bool ManagedRoute::sync()
+ 
+ #endif	 // __BSD__ ------------------------------------------------------------
+ 
++#ifdef __sun   // -------------------------------------------------------------
++
++	if ((leftt) && (!_applied.count(leftt))) {
++		_applied[leftt] = true;
++		_routeCmdSun("add", leftt, _via, _src, _device);
++	}
++	if ((rightt) && (!_applied.count(rightt))) {
++		_applied[rightt] = true;
++		_routeCmdSun("add", rightt, _via, _src, _device);
++	}
++
++#endif	 // __sun -------------------------------------------------------------
++
+ #ifdef __LINUX__   // ----------------------------------------------------------
+ 
+ #ifdef ZT_EXTOSDEP
+@@ -612,6 +669,9 @@ void ManagedRoute::remove()
+ #ifdef __BSD__
+ #endif	 // __BSD__ ------------------------------------------------------------
+ 
++#ifdef __sun
++#endif	 // __sun -------------------------------------------------------------
++
+ 	for (std::map<InetAddress, bool>::iterator r(_applied.begin()); r != _applied.end(); ++r) {
+ #ifdef __BSD__	 // ------------------------------------------------------------
+ 		if (_target && _target.netmaskBits() == 0) {
+@@ -628,6 +688,10 @@ void ManagedRoute::remove()
+ 		break;
+ #endif	 // __BSD__ ------------------------------------------------------------
+ 
++#ifdef __sun   // -------------------------------------------------------------
++		_routeCmdSun("delete", r->first, _via, _src, _device);
++#endif	 // __sun -------------------------------------------------------------
++
+ #ifdef __LINUX__   // ----------------------------------------------------------
+ 				   //_routeCmd("del",r->first,_via,(_via) ? (const char *)0 : _device);
+ #ifdef ZT_EXTOSDEP
+diff --git a/osdep/OSUtils.cpp b/osdep/OSUtils.cpp
+index 2fee8f194..d1cd3a7d2 100644
+--- a/osdep/OSUtils.cpp
++++ b/osdep/OSUtils.cpp
+@@ -117,6 +117,8 @@ std::vector<std::string> OSUtils::listDirectory(const char* path, bool includeDi
+ #else
+ 	struct dirent de;
+ 	struct dirent* dptr;
++	struct stat st;
++	char tmp[4096];
+ 	DIR* d = opendir(path);
+ 	if (! d)
+ 		return r;
+@@ -125,8 +127,18 @@ std::vector<std::string> OSUtils::listDirectory(const char* path, bool includeDi
+ 		if (readdir_r(d, &de, &dptr))
+ 			break;
+ 		if (dptr) {
+-			if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, "..")) && ((dptr->d_type != DT_DIR) || (includeDirectories)))
+-				r.push_back(std::string(dptr->d_name));
++			if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, ".."))) {
++				bool isDir = false;
++#if defined(__sun) || defined(__sun__)
++				ztsnprintf(tmp, sizeof(tmp), "%s/%s", path, dptr->d_name);
++				if ((stat(tmp, &st) == 0) && S_ISDIR(st.st_mode))
++					isDir = true;
++#else
++				isDir = (dptr->d_type == DT_DIR);
++#endif
++				if ((! isDir) || includeDirectories)
++					r.push_back(std::string(dptr->d_name));
++			}
+ 		}
+ 		else
+ 			break;
+@@ -177,13 +189,24 @@ long OSUtils::cleanDirectory(const char* path, const int64_t olderThan)
+ 		if (readdir_r(d, &de, &dptr))
+ 			break;
+ 		if (dptr) {
+-			if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, "..")) && (dptr->d_type == DT_REG)) {
++			if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, ".."))) {
++				bool isRegular = false;
++#if defined(__sun) || defined(__sun__)
+ 				ztsnprintf(tmp, sizeof(tmp), "%s/%s", path, dptr->d_name);
+-				if (stat(tmp, &st) == 0) {
+-					int64_t mt = (int64_t)(st.st_mtime);
+-					if ((mt > 0) && ((mt * 1000) < olderThan)) {
+-						if (unlink(tmp) == 0)
+-							++cleaned;
++				if ((stat(tmp, &st) == 0) && S_ISREG(st.st_mode))
++					isRegular = true;
++#else
++				isRegular = (dptr->d_type == DT_REG);
++				if (isRegular)
++					ztsnprintf(tmp, sizeof(tmp), "%s/%s", path, dptr->d_name);
++#endif
++				if (isRegular) {
++					if (stat(tmp, &st) == 0) {
++						int64_t mt = (int64_t)(st.st_mtime);
++						if ((mt > 0) && ((mt * 1000) < olderThan)) {
++							if (unlink(tmp) == 0)
++								++cleaned;
++						}
+ 					}
+ 				}
+ 			}
+diff --git a/service/OneService.cpp b/service/OneService.cpp
+index 227b575f7..9f2c47c29 100644
+--- a/service/OneService.cpp
++++ b/service/OneService.cpp
+@@ -3147,7 +3147,7 @@ class OneServiceImpl : public OneService {
+ 
+ 				// Ignore routes implied by local managed IPs since adding the IP adds the route.
+ 				// Apple on the other hand seems to need this at least on some versions.
+-#ifndef __APPLE__
++#if !defined(__APPLE__) && !defined(__sun)
+ 				bool haveRoute = false;
+ 				for (std::vector<InetAddress>::iterator ip(n.managedIps().begin()); ip != n.managedIps().end(); ++ip) {
+ 					if ((target->netmaskBits() == ip->netmaskBits()) && (target->containsAddress(*ip))) {
