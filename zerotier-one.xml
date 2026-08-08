@@ -9,7 +9,7 @@
       <service_fmri value="svc:/system/filesystem/local:default"/>
     </dependency>
 
-    <dependency name="network-physical" grouping="optional_all" restart_on="none" type="service">
+    <dependency name="network-physical" grouping="require_all" restart_on="restart" type="service">
       <service_fmri value="svc:/network/physical:default"/>
     </dependency>
 

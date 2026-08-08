@@ -1,5 +1,5 @@
 diff --git a/make-bsd.mk b/make-bsd.mk
-index cf4c22c8b..67a811ea2 100644
+index cf4c22c8..67a811ea 100644
 --- a/make-bsd.mk
 +++ b/make-bsd.mk
 @@ -1,5 +1,7 @@
@@ -41,7 +41,7 @@ index cf4c22c8b..67a811ea2 100644
  
  ifeq ($(ZT_TRACE),1)
 diff --git a/node/Constants.hpp b/node/Constants.hpp
-index 6baf8c7fe..a76d2345c 100644
+index 6baf8c7f..a76d2345 100644
 --- a/node/Constants.hpp
 +++ b/node/Constants.hpp
 @@ -86,6 +86,12 @@
@@ -70,7 +70,7 @@ index 6baf8c7fe..a76d2345c 100644
  /**
   * Maximum number of packet fragments we'll support (protocol max: 16)
 diff --git a/one.cpp b/one.cpp
-index a066f4e65..8cffbbf53 100644
+index 25f8d632..9fb81250 100644
 --- a/one.cpp
 +++ b/one.cpp
 @@ -549,9 +549,9 @@ static int cli(int argc, char** argv)
@@ -100,7 +100,7 @@ index a066f4e65..8cffbbf53 100644
  							std::string policyStr = "none";
  							if (bondingPolicyCode >= ZT_BOND_POLICY_NONE && bondingPolicyCode <= ZT_BOND_POLICY_BALANCE_AWARE) {
 diff --git a/osdep/BSDEthernetTap.cpp b/osdep/BSDEthernetTap.cpp
-index 82ac07d1a..727d4d9aa 100644
+index 82ac07d1..a7f3b30b 100644
 --- a/osdep/BSDEthernetTap.cpp
 +++ b/osdep/BSDEthernetTap.cpp
 @@ -22,10 +22,14 @@
@@ -128,7 +128,7 @@ index 82ac07d1a..727d4d9aa 100644
  #include <sys/ioctl.h>
  #include <sys/param.h>
  #include <sys/select.h>
-@@ -45,15 +51,184 @@
+@@ -45,15 +51,216 @@
  #include <sys/wait.h>
  #include <unistd.h>
  #include <utility>
@@ -254,21 +254,37 @@ index 82ac07d1a..727d4d9aa 100644
 +	if (rc != DLPI_SUCCESS)
 +		return false;
 +	rc = ::dlpi_bind(dh, DLPI_ANY_SAP, (uint_t*)0);
-+	if (rc != DLPI_SUCCESS)
++	if (rc != DLPI_SUCCESS) {
++		::dlpi_close(dh);
++		dh = (dlpi_handle_t)0;
 +		return false;
++	}
 +	if (promiscuous) {
 +		rc = ::dlpi_promiscon(dh, DL_PROMISC_PHYS);
-+		if (rc != DLPI_SUCCESS)
++		if (rc != DLPI_SUCCESS) {
++			::dlpi_close(dh);
++			dh = (dlpi_handle_t)0;
 +			return false;
++		}
 +		rc = ::dlpi_promiscon(dh, DL_PROMISC_SAP);
-+		if (rc != DLPI_SUCCESS)
++		if (rc != DLPI_SUCCESS) {
++			::dlpi_close(dh);
++			dh = (dlpi_handle_t)0;
 +			return false;
++		}
 +		rc = ::dlpi_promiscon(dh, DL_PROMISC_MULTI);
-+		if (rc != DLPI_SUCCESS)
++		if (rc != DLPI_SUCCESS) {
++			::dlpi_close(dh);
++			dh = (dlpi_handle_t)0;
 +			return false;
++		}
 +	}
 +	fd = ::dlpi_fd(dh);
-+	return (fd >= 0);
++	if (fd >= 0)
++		return true;
++	::dlpi_close(dh);
++	dh = (dlpi_handle_t)0;
++	return false;
 +}
 +
 +static bool _sunCreateDlpiStack(const std::string& stubDev, const std::string& visDev, const std::string& backDev, const MAC& visMac, const MAC& backMac, unsigned int mtu, dlpi_handle_t& rxDh, dlpi_handle_t& txDh, int& rxFd)
@@ -304,19 +320,44 @@ index 82ac07d1a..727d4d9aa 100644
 +
 +	if (! _sunOpenRawHandle(visDev, true, rxDh, rxFd))
 +		return false;
-+	if (! _sunOpenRawHandle(backDev, false, txDh, txFd))
++	if (! _sunOpenRawHandle(backDev, false, txDh, txFd)) {
++		::dlpi_close(rxDh);
++		rxDh = (dlpi_handle_t)0;
++		rxFd = -1;
 +		return false;
++	}
 +	rxFd = ::dlpi_fd(rxDh);
 +	return (rxFd >= 0);
++}
++#endif
++
++#ifdef __sun
++bool BSDEthernetTap::_sunReopenReceiveHandle()
++{
++	if (_sunDlpi) {
++		::dlpi_close(_sunDlpi);
++		_sunDlpi = (dlpi_handle_t)0;
++	}
++	_fd = -1;
++	return _sunOpenRawHandle(_dev, true, _sunDlpi, _fd);
 +}
 +#endif
 +
  BSDEthernetTap::BSDEthernetTap(
  	const char* homePath,
  	unsigned int concurrency,
-@@ -70,9 +245,26 @@ BSDEthernetTap::BSDEthernetTap(
- 	, _pinning(pinning)
- 	, _arg(arg)
+@@ -65,14 +272,31 @@ BSDEthernetTap::BSDEthernetTap(
+ 	const char* friendlyName,
+ 	void (*handler)(void*, void*, uint64_t, const MAC&, const MAC&, unsigned int, unsigned int, const void*, unsigned int),
+ 	void* arg)
+-	: _handler(handler)
+-	, _concurrency(concurrency)
+-	, _pinning(pinning)
+-	, _arg(arg)
++		: _handler(handler)
++		, _arg(arg)
++		, _concurrency(concurrency)
++		, _pinning(pinning)
  	, _nwid(nwid)
 -	, _mtu(mtu)
 +	, _mtu(
@@ -343,7 +384,7 @@ index 82ac07d1a..727d4d9aa 100644
  	, _enabled(true)
  	, _lastIfAddrsUpdate(0)
  {
-@@ -81,7 +273,15 @@ BSDEthernetTap::BSDEthernetTap(
+@@ -81,7 +305,15 @@ BSDEthernetTap::BSDEthernetTap(
  
  	Mutex::Lock _gl(globalTapCreateLock);
  
@@ -360,7 +401,7 @@ index 82ac07d1a..727d4d9aa 100644
  	/* FreeBSD allows long interface names and interface renaming */
  
  	_dev = "zt";
-@@ -163,7 +363,7 @@ BSDEthernetTap::BSDEthernetTap(
+@@ -163,7 +395,7 @@ BSDEthernetTap::BSDEthernetTap(
  	}
  #endif
  
@@ -369,7 +410,7 @@ index 82ac07d1a..727d4d9aa 100644
  		throw std::runtime_error("unable to open TAP device or no more devices available");
  
  	if (fcntl(_fd, F_SETFL, fcntl(_fd, F_GETFL) & ~O_NONBLOCK) == -1) {
-@@ -175,6 +375,7 @@ BSDEthernetTap::BSDEthernetTap(
+@@ -175,6 +407,7 @@ BSDEthernetTap::BSDEthernetTap(
  	OSUtils::ztsnprintf(ethaddr, sizeof(ethaddr), "%.2x:%.2x:%.2x:%.2x:%.2x:%.2x", (int)mac[0], (int)mac[1], (int)mac[2], (int)mac[3], (int)mac[4], (int)mac[5]);
  	OSUtils::ztsnprintf(mtustr, sizeof(mtustr), "%u", _mtu);
  	OSUtils::ztsnprintf(metstr, sizeof(metstr), "%u", _metric);
@@ -377,7 +418,7 @@ index 82ac07d1a..727d4d9aa 100644
  	long cpid = (long)vfork();
  	if (cpid == 0) {
  #ifdef ZT_TRACE
-@@ -191,6 +392,7 @@ BSDEthernetTap::BSDEthernetTap(
+@@ -191,6 +424,7 @@ BSDEthernetTap::BSDEthernetTap(
  			throw std::runtime_error("ifconfig failure setting link-layer address and activating tap interface");
  		}
  	}
@@ -385,27 +426,32 @@ index 82ac07d1a..727d4d9aa 100644
  
  	// Set close-on-exec so that devices cannot persist if we fork/exec for update
  	fcntl(_fd, F_SETFD, fcntl(_fd, F_GETFD) | FD_CLOEXEC);
-@@ -203,9 +405,13 @@ BSDEthernetTap::BSDEthernetTap(
+@@ -203,9 +437,11 @@ BSDEthernetTap::BSDEthernetTap(
  BSDEthernetTap::~BSDEthernetTap()
  {
  	::write(_shutdownSignalPipe[1], "\0", 1);	// causes thread to exit
 -	::close(_fd);
+-	::close(_shutdownSignalPipe[0]);
+-	::close(_shutdownSignalPipe[1]);
 +#ifndef __sun
 +	if (_fd >= 0)
 +		::close(_fd);
 +#endif
- 	::close(_shutdownSignalPipe[0]);
- 	::close(_shutdownSignalPipe[1]);
 +#ifndef __sun
  	long cpid = (long)vfork();
  	if (cpid == 0) {
  #ifdef ZT_TRACE
-@@ -218,7 +424,24 @@ BSDEthernetTap::~BSDEthernetTap()
+@@ -218,10 +454,29 @@ BSDEthernetTap::~BSDEthernetTap()
  		int exitcode = -1;
  		::waitpid(cpid, &exitcode, 0);
  	}
 +#endif
  	Thread::join(_thread);
+ 	for (std::thread& t : _rxThreads) {
+ 		t.join();
+ 	}
++	::close(_shutdownSignalPipe[0]);
++	::close(_shutdownSignalPipe[1]);
 +#ifdef __sun
 +	if (_sunDlpi) {
 +		::dlpi_close(_sunDlpi);
@@ -422,10 +468,10 @@ index 82ac07d1a..727d4d9aa 100644
 +	(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "delete-vnic", _dev.c_str()});
 +	(void)_sunRun({"/usr/sbin/dladm", "/usr/sbin/dladm", "delete-etherstub", _sunStubDev.c_str()});
 +#endif
- 	for (std::thread& t : _rxThreads) {
- 		t.join();
- 	}
-@@ -239,10 +462,21 @@ static bool ___removeIp(const std::string& _dev, const InetAddress& ip)
+ }
+ 
+ void BSDEthernetTap::setEnabled(bool en)
+@@ -239,10 +494,21 @@ static bool ___removeIp(const std::string& _dev, const InetAddress& ip)
  	long cpid = (long)vfork();
  	if (cpid == 0) {
  		char ipbuf[64];
@@ -447,7 +493,7 @@ index 82ac07d1a..727d4d9aa 100644
  		_exit(-1);
  	}
  	else if (cpid > 0) {
-@@ -273,10 +507,39 @@ bool BSDEthernetTap::addIp(const InetAddress& ip)
+@@ -273,10 +539,39 @@ bool BSDEthernetTap::addIp(const InetAddress& ip)
  	long cpid = (long)vfork();
  	if (cpid == 0) {
  		char tmp[128];
@@ -487,7 +533,7 @@ index 82ac07d1a..727d4d9aa 100644
  		::_exit(-1);
  	}
  	else if (cpid > 0) {
-@@ -316,7 +579,13 @@ std::vector<InetAddress> BSDEthernetTap::ips() const
+@@ -316,7 +611,13 @@ std::vector<InetAddress> BSDEthernetTap::ips() const
  
  	struct ifaddrs* p = ifa;
  	while (p) {
@@ -502,7 +548,7 @@ index 82ac07d1a..727d4d9aa 100644
  			switch (p->ifa_addr->sa_family) {
  				case AF_INET: {
  					struct sockaddr_in* sin = (struct sockaddr_in*)p->ifa_addr;
-@@ -355,7 +624,13 @@ void BSDEthernetTap::put(const MAC& from, const MAC& to, unsigned int etherType,
+@@ -355,7 +656,13 @@ void BSDEthernetTap::put(const MAC& from, const MAC& to, unsigned int etherType,
  		*((uint16_t*)(putBuf + 12)) = htons((uint16_t)etherType);
  		memcpy(putBuf + 14, data, len);
  		len += 14;
@@ -516,7 +562,7 @@ index 82ac07d1a..727d4d9aa 100644
  	}
  }
  
-@@ -372,7 +647,7 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
+@@ -372,7 +679,7 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
  {
  	std::vector<MulticastGroup> newGroups;
  
@@ -525,7 +571,7 @@ index 82ac07d1a..727d4d9aa 100644
  	struct ifmaddrs* ifmap = (struct ifmaddrs*)0;
  	if (! getifmaddrs(&ifmap)) {
  		struct ifmaddrs* p = ifmap;
-@@ -387,7 +662,7 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
+@@ -387,7 +694,7 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
  		}
  		freeifmaddrs(ifmap);
  	}
@@ -534,7 +580,7 @@ index 82ac07d1a..727d4d9aa 100644
  
  	std::vector<InetAddress> allIps(ips());
  	for (std::vector<InetAddress>::iterator ip(allIps.begin()); ip != allIps.end(); ++ip)
-@@ -410,6 +685,9 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
+@@ -410,6 +717,9 @@ void BSDEthernetTap::scanMulticastGroups(std::vector<MulticastGroup>& added, std
  
  void BSDEthernetTap::setMtu(unsigned int mtu)
  {
@@ -544,7 +590,7 @@ index 82ac07d1a..727d4d9aa 100644
  	if (mtu != _mtu) {
  		_mtu = mtu;
  		long cpid = (long)vfork();
-@@ -418,6 +696,11 @@ void BSDEthernetTap::setMtu(unsigned int mtu)
+@@ -418,6 +728,11 @@ void BSDEthernetTap::setMtu(unsigned int mtu)
  			OSUtils::ztsnprintf(tmp, sizeof(tmp), "%u", mtu);
  #ifdef ZT_TRACE
  			fprintf(stderr, "DEBUG: ifconfig %s mtu %s" ZT_EOL_S, _dev.c_str(), tmp);
@@ -556,20 +602,26 @@ index 82ac07d1a..727d4d9aa 100644
  #endif
  			execl("/sbin/ifconfig", "/sbin/ifconfig", _dev.c_str(), "mtu", tmp, (const char*)0);
  			_exit(-1);
-@@ -435,11 +718,11 @@ void BSDEthernetTap::threadMain() throw()
+@@ -435,11 +750,16 @@ void BSDEthernetTap::threadMain() throw()
  	// constructing itself.
  	Thread::sleep(500);
  
 -#ifndef __OpenBSD__
  	bool pinning = _pinning;
  
- 	for (unsigned int i = 0; i < _concurrency; ++i) {
+-	for (unsigned int i = 0; i < _concurrency; ++i) {
++	unsigned int receiveConcurrency = _concurrency;
++#ifdef __sun
++	// A DLPI stream has one receive queue. Core packet processing remains concurrent.
++	receiveConcurrency = 1;
++#endif
++	for (unsigned int i = 0; i < receiveConcurrency; ++i) {
  		_rxThreads.push_back(std::thread([this, i, pinning] {
 +#if !defined(__OpenBSD__) && !defined(__sun)
  			if (pinning) {
  				int pinCore = i % _concurrency;
  				fprintf(stderr, "Pinning thread %d to core %d\n", i, pinCore);
-@@ -454,7 +737,9 @@ void BSDEthernetTap::threadMain() throw()
+@@ -454,28 +774,78 @@ void BSDEthernetTap::threadMain() throw()
  					exit(1);
  				}
  			}
@@ -580,7 +632,61 @@ index 82ac07d1a..727d4d9aa 100644
  
  			uint8_t b[ZT_TAP_BUF_SIZE];
  			MAC to, from;
-@@ -476,6 +761,19 @@ void BSDEthernetTap::threadMain() throw()
+-			fd_set readfds, nullfds;
+-			int n, nfds, r;
+-
+-			FD_ZERO(&readfds);
++			fd_set readfds;
++			int n, nfds;
++#ifndef __sun
++			fd_set nullfds;
++			int r;
+ 			FD_ZERO(&nullfds);
+-			nfds = (int)std::max(_shutdownSignalPipe[0], _fd) + 1;
+-
+ 			r = 0;
++#endif
+ 
+ 			for (;;) {
++				FD_ZERO(&readfds);
+ 				FD_SET(_shutdownSignalPipe[0], &readfds);
++#ifdef __sun
++				if (_fd < 0) {
++					struct timeval retryDelay = {1, 0};
++					int selected = ::select(_shutdownSignalPipe[0] + 1, &readfds, (fd_set*)0, (fd_set*)0, &retryDelay);
++					if ((selected > 0) && FD_ISSET(_shutdownSignalPipe[0], &readfds))
++						break;
++					if (! _sunReopenReceiveHandle())
++						continue;
++				}
++#endif
+ 				FD_SET(_fd, &readfds);
+-				select(nfds, &readfds, &nullfds, &nullfds, (struct timeval*)0);
++				nfds = (int)std::max(_shutdownSignalPipe[0], _fd) + 1;
++				int selected = ::select(
++					nfds,
++					&readfds,
++#ifdef __sun
++					(fd_set*)0,
++					(fd_set*)0,
++#else
++					&nullfds,
++					&nullfds,
++#endif
++					(struct timeval*)0);
++				if (selected < 0) {
++					if (errno == EINTR)
++						continue;
++#ifdef __sun
++					fprintf(stderr, "ZeroTier One: DLPI select failed on %s: %s; reopening receive handle\n", _dev.c_str(), strerror(errno));
++					(void)_sunReopenReceiveHandle();
++					continue;
++#else
++					break;
++#endif
++				}
+ 
+ 				if (FD_ISSET(_shutdownSignalPipe[0], &readfds))	  // writes to shutdown pipe terminate thread
  					break;
  
  				if (FD_ISSET(_fd, &readfds)) {
@@ -594,13 +700,15 @@ index 82ac07d1a..727d4d9aa 100644
 +						continue;
 +					}
 +					else {
-+						break;
++						fprintf(stderr, "ZeroTier One: DLPI receive failed on %s: %s; reopening receive handle\n", _dev.c_str(), ::dlpi_strerror(dlpiRc));
++						(void)_sunReopenReceiveHandle();
++						continue;
 +					}
 +#else
  					n = (int)::read(_fd, b + r, sizeof(b) - r);
  					if (n < 0) {
  						if ((errno != EINTR) && (errno != ETIMEDOUT))
-@@ -500,12 +798,27 @@ void BSDEthernetTap::threadMain() throw()
+@@ -500,12 +870,27 @@ void BSDEthernetTap::threadMain() throw()
  							r = 0;
  						}
  					}
@@ -631,7 +739,7 @@ index 82ac07d1a..727d4d9aa 100644
  
  }	// namespace ZeroTier
 diff --git a/osdep/BSDEthernetTap.hpp b/osdep/BSDEthernetTap.hpp
-index 190f3a0b4..d5ed8ee68 100644
+index 190f3a0b..87e5ac48 100644
 --- a/osdep/BSDEthernetTap.hpp
 +++ b/osdep/BSDEthernetTap.hpp
 @@ -21,6 +21,9 @@
@@ -644,7 +752,7 @@ index 190f3a0b4..d5ed8ee68 100644
  
  namespace ZeroTier {
  
-@@ -68,7 +71,18 @@ class BSDEthernetTap : public EthernetTap {
+@@ -68,7 +71,19 @@ class BSDEthernetTap : public EthernetTap {
  	unsigned int _mtu;
  	unsigned int _metric;
  	int _fd;
@@ -652,6 +760,7 @@ index 190f3a0b4..d5ed8ee68 100644
 +	int _ipMuxId;
 +	int _ppa;
 +#ifdef __sun
++	bool _sunReopenReceiveHandle();
 +	dlpi_handle_t _sunDlpi;
 +	dlpi_handle_t _sunTxDlpi;
 +	std::string _sunBackendDev;
@@ -664,7 +773,7 @@ index 190f3a0b4..d5ed8ee68 100644
  	mutable std::vector<InetAddress> _ifaddrs;
  	mutable uint64_t _lastIfAddrsUpdate;
 diff --git a/osdep/EthernetTap.cpp b/osdep/EthernetTap.cpp
-index 1d35e01dc..cf5224963 100644
+index 1d35e01d..cf522496 100644
 --- a/osdep/EthernetTap.cpp
 +++ b/osdep/EthernetTap.cpp
 @@ -41,6 +41,10 @@
@@ -690,7 +799,7 @@ index 1d35e01dc..cf5224963 100644
  	return std::shared_ptr<EthernetTap>(new NetBSDEthernetTap(homePath, mac, mtu, metric, nwid, friendlyName, handler, arg));
  #endif	 // __NetBSD__
 diff --git a/osdep/ManagedRoute.cpp b/osdep/ManagedRoute.cpp
-index 6a605b856..5386ffef4 100644
+index 9c53145f..9b8fe741 100644
 --- a/osdep/ManagedRoute.cpp
 +++ b/osdep/ManagedRoute.cpp
 @@ -96,6 +96,50 @@ struct _RTE {
@@ -744,7 +853,7 @@ index 6a605b856..5386ffef4 100644
  #ifdef __BSD__	 // ------------------------------------------------------------
  #define ZT_ROUTING_SUPPORT_FOUND 1
  
-@@ -564,6 +608,19 @@ bool ManagedRoute::sync()
+@@ -570,6 +614,19 @@ bool ManagedRoute::sync()
  
  #endif	 // __BSD__ ------------------------------------------------------------
  
@@ -764,7 +873,7 @@ index 6a605b856..5386ffef4 100644
  #ifdef __LINUX__   // ----------------------------------------------------------
  
  #ifdef ZT_EXTOSDEP
-@@ -612,6 +669,9 @@ void ManagedRoute::remove()
+@@ -621,6 +678,9 @@ void ManagedRoute::remove()
  #ifdef __BSD__
  #endif	 // __BSD__ ------------------------------------------------------------
  
@@ -774,7 +883,7 @@ index 6a605b856..5386ffef4 100644
  	for (std::map<InetAddress, bool>::iterator r(_applied.begin()); r != _applied.end(); ++r) {
  #ifdef __BSD__	 // ------------------------------------------------------------
  		if (_target && _target.netmaskBits() == 0) {
-@@ -628,6 +688,10 @@ void ManagedRoute::remove()
+@@ -637,6 +697,10 @@ void ManagedRoute::remove()
  		break;
  #endif	 // __BSD__ ------------------------------------------------------------
  
@@ -786,75 +895,62 @@ index 6a605b856..5386ffef4 100644
  				   //_routeCmd("del",r->first,_via,(_via) ? (const char *)0 : _device);
  #ifdef ZT_EXTOSDEP
 diff --git a/osdep/OSUtils.cpp b/osdep/OSUtils.cpp
-index 2fee8f194..d1cd3a7d2 100644
+index 97a2e870..c0e7b8d0 100644
 --- a/osdep/OSUtils.cpp
 +++ b/osdep/OSUtils.cpp
-@@ -117,6 +117,8 @@ std::vector<std::string> OSUtils::listDirectory(const char* path, bool includeDi
+@@ -116,12 +116,24 @@ std::vector<std::string> OSUtils::listDirectory(const char* path, bool includeDi
+ 	}
  #else
- 	struct dirent de;
  	struct dirent* dptr;
 +	struct stat st;
 +	char tmp[4096];
  	DIR* d = opendir(path);
  	if (! d)
  		return r;
-@@ -125,8 +127,18 @@ std::vector<std::string> OSUtils::listDirectory(const char* path, bool includeDi
- 		if (readdir_r(d, &de, &dptr))
- 			break;
- 		if (dptr) {
--			if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, "..")) && ((dptr->d_type != DT_DIR) || (includeDirectories)))
--				r.push_back(std::string(dptr->d_name));
-+			if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, ".."))) {
-+				bool isDir = false;
+ 	while ((dptr = readdir(d)) != nullptr) {
+-		if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, "..")) && ((dptr->d_type != DT_DIR) || (includeDirectories)))
+-			r.push_back(std::string(dptr->d_name));
++		if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, ".."))) {
++			bool isDir = false;
 +#if defined(__sun) || defined(__sun__)
++			ztsnprintf(tmp, sizeof(tmp), "%s/%s", path, dptr->d_name);
++			if ((stat(tmp, &st) == 0) && S_ISDIR(st.st_mode))
++				isDir = true;
++#else
++			isDir = (dptr->d_type == DT_DIR);
++#endif
++			if ((! isDir) || includeDirectories)
++				r.push_back(std::string(dptr->d_name));
++		}
+ 	}
+ 	closedir(d);
+ #endif
+@@ -164,8 +176,19 @@ long OSUtils::cleanDirectory(const char* path, const int64_t olderThan)
+ 	if (! d)
+ 		return -1;
+ 	while ((dptr = readdir(d)) != nullptr) {
+-		if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, "..")) && (dptr->d_type == DT_REG)) {
++		if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, ".."))) {
++			bool isRegular = false;
++#if defined(__sun) || defined(__sun__)
+ 			ztsnprintf(tmp, sizeof(tmp), "%s/%s", path, dptr->d_name);
++			if ((stat(tmp, &st) == 0) && S_ISREG(st.st_mode))
++				isRegular = true;
++#else
++			isRegular = (dptr->d_type == DT_REG);
++			if (isRegular)
 +				ztsnprintf(tmp, sizeof(tmp), "%s/%s", path, dptr->d_name);
-+				if ((stat(tmp, &st) == 0) && S_ISDIR(st.st_mode))
-+					isDir = true;
-+#else
-+				isDir = (dptr->d_type == DT_DIR);
 +#endif
-+				if ((! isDir) || includeDirectories)
-+					r.push_back(std::string(dptr->d_name));
-+			}
- 		}
- 		else
- 			break;
-@@ -177,13 +189,24 @@ long OSUtils::cleanDirectory(const char* path, const int64_t olderThan)
- 		if (readdir_r(d, &de, &dptr))
- 			break;
- 		if (dptr) {
--			if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, "..")) && (dptr->d_type == DT_REG)) {
-+			if ((strcmp(dptr->d_name, ".")) && (strcmp(dptr->d_name, ".."))) {
-+				bool isRegular = false;
-+#if defined(__sun) || defined(__sun__)
- 				ztsnprintf(tmp, sizeof(tmp), "%s/%s", path, dptr->d_name);
--				if (stat(tmp, &st) == 0) {
--					int64_t mt = (int64_t)(st.st_mtime);
--					if ((mt > 0) && ((mt * 1000) < olderThan)) {
--						if (unlink(tmp) == 0)
--							++cleaned;
-+				if ((stat(tmp, &st) == 0) && S_ISREG(st.st_mode))
-+					isRegular = true;
-+#else
-+				isRegular = (dptr->d_type == DT_REG);
-+				if (isRegular)
-+					ztsnprintf(tmp, sizeof(tmp), "%s/%s", path, dptr->d_name);
-+#endif
-+				if (isRegular) {
-+					if (stat(tmp, &st) == 0) {
-+						int64_t mt = (int64_t)(st.st_mtime);
-+						if ((mt > 0) && ((mt * 1000) < olderThan)) {
-+							if (unlink(tmp) == 0)
-+								++cleaned;
-+						}
- 					}
- 				}
- 			}
++			if (! isRegular)
++				continue;
+ 			if (stat(tmp, &st) == 0) {
+ 				int64_t mt = (int64_t)(st.st_mtime);
+ 				if ((mt > 0) && ((mt * 1000) < olderThan)) {
 diff --git a/service/OneService.cpp b/service/OneService.cpp
-index 227b575f7..9f2c47c29 100644
+index d5d08605..caee4e41 100644
 --- a/service/OneService.cpp
 +++ b/service/OneService.cpp
-@@ -3147,7 +3147,7 @@ class OneServiceImpl : public OneService {
+@@ -3158,7 +3158,7 @@ class OneServiceImpl : public OneService {
  
  				// Ignore routes implied by local managed IPs since adding the IP adds the route.
  				// Apple on the other hand seems to need this at least on some versions.

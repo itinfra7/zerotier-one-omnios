@@ -56,7 +56,10 @@ start_service() {
     typeset attempt=0
 
     if pgrep -f "${ZT_MATCH}" >/dev/null 2>&1; then
-        exit 0
+        if zerotier-cli info >/dev/null 2>&1; then
+            exit 0
+        fi
+        stop_service
     fi
 
     cleanup_owned_links
