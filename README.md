@@ -46,6 +46,8 @@ The OmniOS DLPI receive path includes additional lifecycle and recovery handling
 - Joins receive threads before closing DLPI handles and shutdown pipes
 - Closes partially initialized handles when setup fails
 - Restarts ZeroTier when the OmniOS physical network service restarts
+- Restricts process lifecycle signals to the exact managed daemon command line
+- Treats an empty pre-install backup as valid during a clean first installation
 
 These changes prevent a failed DLPI descriptor from leaving SMF in an apparently healthy state while the virtual Ethernet path is stalled or consuming a CPU core.
 

@@ -4,7 +4,7 @@ set -euo pipefail
 
 ZEROTIER_UPSTREAM_VERSION="1.16.2"
 ZEROTIER_UPSTREAM_COMMIT="fc5c3ec22090b5b2a0f274e863651fe9ca489bf4"
-RELEASE_TAG="v1.1.0"
+RELEASE_TAG="v1.1.1"
 RELEASE_BASE_URL="https://github.com/itinfra7/zerotier-one-omnios/releases/download/${RELEASE_TAG}"
 SERVICE_FMRI="svc:/network/zerotier-one:default"
 ZT_HOME="/var/lib/zerotier-one"
@@ -20,6 +20,7 @@ LANG_CHOICE=""
 INSTALL_STARTED=0
 BACKUP_DIR=""
 IDENTITY_HASH_BEFORE=""
+PREEXISTING_INSTALL=0
 
 usage() {
     cat <<EOF
@@ -149,9 +150,9 @@ stop_service() {
     if [ -x "${ZT_PREFIX}/bin/zerotier-one-smf" ]; then
         "${ZT_PREFIX}/bin/zerotier-one-smf" stop || true
     fi
-    pkill -TERM -f "${ZT_BIN}.*${ZT_HOME}" >/dev/null 2>&1 || true
+    pkill -TERM -f "^${ZT_BIN} -d ${ZT_HOME}$" >/dev/null 2>&1 || true
     sleep 2
-    pkill -KILL -f "${ZT_BIN}.*${ZT_HOME}" >/dev/null 2>&1 || true
+    pkill -KILL -f "^${ZT_BIN} -d ${ZT_HOME}$" >/dev/null 2>&1 || true
 }
 
 backup_installation() {
@@ -164,6 +165,7 @@ backup_installation() {
     [ -f "${ZT_BIN}" ] && cp -p "${ZT_BIN}" "${BACKUP_DIR}/zerotier-one"
     [ -f "${ZT_PREFIX}/bin/zerotier-one-smf" ] && cp -p "${ZT_PREFIX}/bin/zerotier-one-smf" "${BACKUP_DIR}/zerotier-one-smf"
     [ -f /var/svc/manifest/network/zerotier-one.xml ] && cp -p /var/svc/manifest/network/zerotier-one.xml "${BACKUP_DIR}/zerotier-one.xml"
+    return 0
 }
 
 restore_installation() {
@@ -177,6 +179,13 @@ restore_installation() {
         svcadm enable -r "${SERVICE_FMRI}"
     else
         svcadm disable -s "${SERVICE_FMRI}" >/dev/null 2>&1 || true
+        svccfg delete -f "${SERVICE_FMRI}" >/dev/null 2>&1 || true
+        rm -f /opt/ooce/bin/zerotier-one /opt/ooce/bin/zerotier-cli /opt/ooce/bin/zerotier-idtool
+        rm -f /var/svc/manifest/network/zerotier-one.xml
+        rm -rf "${ZT_PREFIX}"
+        if [ "${PREEXISTING_INSTALL}" -eq 0 ]; then
+            rm -rf "${ZT_HOME}"
+        fi
     fi
 }
 
@@ -195,6 +204,11 @@ verify_installation() {
     done
     return 1
 }
+
+if [ -e "${ZT_PREFIX}" ] || [ -e "${ZT_HOME}" ] || \
+    [ -e /var/svc/manifest/network/zerotier-one.xml ]; then
+    PREEXISTING_INSTALL=1
+fi
 
 install_packages
 mkdir -p "${BUILD_DIR}" "${STAGE_DIR}" "${ZT_HOME}"

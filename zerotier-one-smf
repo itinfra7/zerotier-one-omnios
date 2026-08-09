@@ -4,7 +4,7 @@ set -euo pipefail
 PATH=/usr/bin:/usr/sbin:/opt/ooce/bin
 ZT_BIN="/opt/zerotier-one/bin/zerotier-one"
 ZT_HOME="/var/lib/zerotier-one"
-ZT_MATCH="${ZT_BIN}.*${ZT_HOME}"
+ZT_MATCH="^${ZT_BIN} -d ${ZT_HOME}$"
 
 cleanup_owned_links() {
     typeset link
