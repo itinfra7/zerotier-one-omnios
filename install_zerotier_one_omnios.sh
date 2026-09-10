@@ -4,7 +4,7 @@ set -euo pipefail
 
 ZEROTIER_UPSTREAM_VERSION="1.16.2"
 ZEROTIER_UPSTREAM_COMMIT="fc5c3ec22090b5b2a0f274e863651fe9ca489bf4"
-RELEASE_TAG="v1.1.1"
+RELEASE_TAG="v1.1.2"
 RELEASE_BASE_URL="https://github.com/itinfra7/zerotier-one-omnios/releases/download/${RELEASE_TAG}"
 SERVICE_FMRI="svc:/network/zerotier-one:default"
 ZT_HOME="/var/lib/zerotier-one"

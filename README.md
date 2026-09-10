@@ -82,7 +82,7 @@ To enable IPv4 and IPv6 forwarding during unattended installation:
 
 ## Upgrade
 
-Run the same installer to upgrade an existing 1.16.1 OmniOS installation.
+Run the same installer to upgrade an existing 1.16.1 or earlier 1.16.2 OmniOS installation.
 
 The upgrade preserves:
 

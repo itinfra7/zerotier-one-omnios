@@ -772,6 +772,27 @@ index 190f3a0b..87e5ac48 100644
  	volatile bool _enabled;
  	mutable std::vector<InetAddress> _ifaddrs;
  	mutable uint64_t _lastIfAddrsUpdate;
+diff --git a/osdep/Binder.hpp b/osdep/Binder.hpp
+index 7034d950..055b4381 100644
+--- a/osdep/Binder.hpp
++++ b/osdep/Binder.hpp
+@@ -497,11 +497,14 @@ class Binder {
+ 		bool r = false;
+ 		Mutex::Lock _l(_lock);
+ 		for (unsigned int b = 0, c = _bindingCount; b < c; ++b) {
+-			if (ttl)
++			if (_bindings[b].address.ss_family != addr->ss_family)
++				continue;
++			const bool setTtl = ttl && addr->ss_family == AF_INET;
++			if (setTtl)
+ 				phy.setIp4UdpTtl(_bindings[b].udpSock, ttl);
+ 			if (phy.udpSend(_bindings[b].udpSock, (const struct sockaddr*)addr, data, len))
+ 				r = true;
+-			if (ttl)
++			if (setTtl)
+ 				phy.setIp4UdpTtl(_bindings[b].udpSock, 255);
+ 		}
+ 		return r;
 diff --git a/osdep/EthernetTap.cpp b/osdep/EthernetTap.cpp
 index 1d35e01d..cf522496 100644
 --- a/osdep/EthernetTap.cpp
@@ -946,6 +967,25 @@ index 97a2e870..c0e7b8d0 100644
  			if (stat(tmp, &st) == 0) {
  				int64_t mt = (int64_t)(st.st_mtime);
  				if ((mt > 0) && ((mt * 1000) < olderThan)) {
+diff --git a/osdep/Phy.hpp b/osdep/Phy.hpp
+index 7014e739..778acee9 100644
+--- a/osdep/Phy.hpp
++++ b/osdep/Phy.hpp
+@@ -476,7 +476,14 @@ template <typename HANDLER_PTR_TYPE> class Phy {
+ 	 */
+ 	inline bool udpSend(PhySocket* sock, const struct sockaddr* remoteAddress, const void* data, unsigned long len)
+ 	{
++		if (! sock || ! remoteAddress)
++			return false;
+ 		PhySocketImpl& sws = *(reinterpret_cast<PhySocketImpl*>(sock));
++		// Reject incompatible destinations before entering the kernel UDP path.
++		if (sws.type != ZT_PHY_SOCKET_UDP ||
++			(remoteAddress->sa_family != AF_INET && remoteAddress->sa_family != AF_INET6) ||
++			sws.saddr.ss_family != remoteAddress->sa_family)
++			return false;
+ 		bool sent = false;
+ #if defined(_WIN32) || defined(_WIN64)
+ 		sent = ((long)::sendto(sws.sock, reinterpret_cast<const char*>(data), len, 0, remoteAddress, (remoteAddress->sa_family == AF_INET6) ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in)) == (long)len);
 diff --git a/service/OneService.cpp b/service/OneService.cpp
 index d5d08605..caee4e41 100644
 --- a/service/OneService.cpp
