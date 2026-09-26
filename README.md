@@ -48,6 +48,8 @@ The OmniOS DLPI receive path includes additional lifecycle and recovery handling
 - Restarts ZeroTier when the OmniOS physical network service restarts
 - Restricts process lifecycle signals to the exact managed daemon command line
 - Treats an empty pre-install backup as valid during a clean first installation
+- Sends UDP packets only through sockets with a matching IPv4 or IPv6 address family
+- Applies `IP_TTL` only to IPv4 UDP sockets
 
 These changes prevent a failed DLPI descriptor from leaving SMF in an apparently healthy state while the virtual Ethernet path is stalled or consuming a CPU core.
 
